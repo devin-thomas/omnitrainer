@@ -18,6 +18,7 @@ KEY COMPONENTS:
 """
 
 import os
+import json
 import requests
 import gradio as gr
 import uuid
@@ -67,6 +68,19 @@ MODERATION_CONFIG = {
         "unsafe_flags": ["is_unfriendly", "is_unprofessional", "contains_pii"],
     },
 }
+
+
+def _serialize_feedback_value(value: Any, max_length: int = 500) -> str:
+    """Convert feedback payloads into a trace-friendly string."""
+    if isinstance(value, str):
+        serialized = value
+    else:
+        serialized = json.dumps(value, default=str)
+
+    if len(serialized) <= max_length:
+        return serialized
+
+    return f"{serialized[:max_length]}..."
 
 
 def _call_text_moderation(text: str, span: trace.Span) -> Tuple[dict[str, Any], str, str, str]:
@@ -209,6 +223,45 @@ class ChatSessionWithTracing:
             attributes={"session.id": self.session_id},
         )
 
+    def record_feedback(self, feedback: gr.LikeData) -> None:
+        """
+        Record a user's like/dislike action as a dedicated feedback span.
+
+        Keeping feedback in its own span makes Phoenix traces easier to search
+        and satisfies the requirement for explicit human feedback instrumentation.
+        """
+        feedback_context = None
+        if self.conversation_span and self.conversation_span.is_recording():
+            feedback_context = trace.set_span_in_context(self.conversation_span)
+
+        reaction = feedback.liked if isinstance(feedback.liked, str) else "like" if feedback.liked else "dislike"
+        feedback_index = list(feedback.index) if isinstance(feedback.index, tuple) else feedback.index
+
+        attributes: dict[str, Any] = {
+            "session.id": self.session_id,
+            "feedback.index": feedback_index,
+            "feedback.liked": feedback.liked,
+            "feedback.reaction": reaction,
+        }
+
+        if isinstance(feedback.value, dict):
+            role = feedback.value.get("role")
+            content = feedback.value.get("content")
+            if role is not None:
+                attributes["feedback.message.role"] = str(role)
+            if content is not None:
+                attributes["feedback.message.content"] = _serialize_feedback_value(content)
+            else:
+                attributes["feedback.message.value"] = _serialize_feedback_value(feedback.value)
+        else:
+            attributes["feedback.message.value"] = _serialize_feedback_value(feedback.value)
+
+        span_kwargs = {"context": feedback_context} if feedback_context is not None else {}
+        with tracer.start_as_current_span("feedback", **span_kwargs) as span:
+            span.set_attributes(attributes)
+
+        logger.info(f"Recorded feedback span for session {self.session_id}: {reaction}")
+
     async def chat_with_gemini(self, message: dict, history: List, past_messages: List) -> Tuple[str, List, str]:
         """
         Process a chat turn: moderate content, then send to AI customer.
@@ -232,7 +285,7 @@ class ChatSessionWithTracing:
             "chat_turn",
             context=trace.set_span_in_context(self.conversation_span),
         ) as span:
-            
+
             logger.info(f"New turn - Text: '{message.get('text', '')[:50]}...', Files: {len(message.get('files', []))}")
 
             # Build prompt for the AI customer (includes text and media)
@@ -286,7 +339,7 @@ class ChatSessionWithTracing:
                             # Content safe - read file and add to prompt
                             with open(file_path, "rb") as f:
                                 file_bytes = f.read()
-                            
+
                             prompt_parts.append(BinaryContent(data=file_bytes, media_type=mime_type))
 
                         except ValueError as e:
@@ -361,6 +414,13 @@ def create_chat_interface() -> gr.Blocks:
         with gr.Row():
             # Left column: Chat interface (75% width)
             with gr.Column(scale=3):
+                chatbot = gr.Chatbot(
+                    show_copy_button=True,
+                    type="messages",  # Use messages format for multimodal support
+                    placeholder="👋 Start by greeting the customer or introducing yourself. The AI customer will respond with their complaint.",
+                    height="75vh",
+                )
+
                 gr.ChatInterface(
                     fn=chat_session.chat_with_gemini,
                     type="messages",  # Use newer messages format (supports multimodal)
@@ -372,15 +432,13 @@ def create_chat_interface() -> gr.Blocks:
                         sources=["upload", "microphone"],  # Allow file upload and recording
                         placeholder="Type a message, upload files, or record audio...",
                     ),
-                    chatbot=gr.Chatbot(
-                        show_copy_button=True,
-                        type="messages",  # Use messages format for multimodal support
-                        placeholder="👋 Start by greeting the customer or introducing yourself. The AI customer will respond with their complaint.",
-                        height="75vh",
-                    ),
+                    chatbot=chatbot,
                     additional_inputs=[past_messages_state],
                     additional_outputs=[past_messages_state, feedback_display],
                 )
+
+                # Capture thumbs up/down as a dedicated trace span in Phoenix.
+                chatbot.like(chat_session.record_feedback)
 
             # Right column: Feedback and guidelines (25% width)
             with gr.Column(scale=1):
