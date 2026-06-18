@@ -21,6 +21,11 @@ classifiers = [
     "Programming Language :: Python :: 3.12",
 ]
 
+[project.urls]
+Homepage = "https://github.com/devin-thomas/omnitrainer"
+Repository = "https://github.com/devin-thomas/omnitrainer.git"
+Issues = "https://github.com/devin-thomas/omnitrainer/issues"
+
 dependencies = [
     "fastapi>=0.104.0",
     "uvicorn[standard]>=0.24.0",
