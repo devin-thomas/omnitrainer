@@ -1,0 +1,50 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Build and packaging artifacts
+build/
+dist/
+.eggs/
+*.egg
+*.egg-info/
+pip-wheel-metadata/
+
+# Virtual environments and local tooling
+.env
+.venv/
+venv/
+env/
+ENV/
+.python-version
+.pdm-python
+.pdm-build/
+.pdm.toml
+
+# Test and coverage output
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.tox/
+.nox/
+
+# IDE and OS files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Local runtime files
+*.log
+workdir/
+site/
+__pypackages__/
+
+# Local coursework/planning artifacts
+project_proposal.md
